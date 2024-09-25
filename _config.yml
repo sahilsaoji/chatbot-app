@@ -1,0 +1,15 @@
+# Site settings
+title: HAI - Sahil Saoji
+description: Currently a website where you take an excel sheet and create data visualizations
+baseurl: "chatbot-app/" # the subpath of your site, e.g. /blog
+url: "http://sahilsaoji.github.io/"
+
+# Build settings
+markdown: kramdown
+theme: jekyll-theme-primer
+
+# Exclude certain files and directories
+exclude:
+  - backend/venv
+  - backend/node_modules
+  - node/modules

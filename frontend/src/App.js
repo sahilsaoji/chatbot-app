@@ -127,7 +127,7 @@ function App() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-green-400 to-blue-500 flex items-center justify-center p-4">
       <div className="bg-white w-full max-w-4xl rounded-lg shadow-lg p-6 space-y-6">
-        <h1 className="text-3xl text-center font-bold text-gray-900">Data Visualization Helper</h1>
+        <h1 className="text-3xl text-center font-bold text-gray-900">Data Visualization</h1>
         <p className="text-center text-gray-500">Upload a dataset and prompt a data visualization based on that dataset</p>
 
         {/* File upload box */}

@@ -1,7 +1,7 @@
 # Site settings
 title: HAI - Sahil Saoji
 description: Currently a website where you take an Excel sheet and create data visualizations
-baseurl: "/chatbot-app" # the subpath of your site, e.g. /chatbot-app
+baseurl: "/chatbot-app" # the subpath of your site
 url: "https://sahilsaoji.github.io" # your site URL
 
 # Build settings

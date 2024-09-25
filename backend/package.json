@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "d3-dsv": "^3.0.1",
+    "react-vega": "^7.6.0"
+  }
+}

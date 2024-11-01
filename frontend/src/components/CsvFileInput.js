@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React from 'react';
 
 const CsvFileInput = ({ onFileLoad }) => {
   const handleFileChange = (event) => {
@@ -7,9 +7,8 @@ const CsvFileInput = ({ onFileLoad }) => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const text = e.target.result;
-        // Assuming the CSV data is being parsed into an array of objects here
-        const parsedData = parseCsv(text);
-        onFileLoad(parsedData);
+        const parsedData = parseCsv(text); // Parse and sanitize CSV data
+        onFileLoad(parsedData); // Pass sanitized data to the parent component
       };
       reader.readAsText(file);
     }
@@ -28,13 +27,14 @@ const CsvFileInput = ({ onFileLoad }) => {
   };
 
   const parseCsv = (text) => {
-    // Implement your CSV parsing logic here
-    const lines = text.split('\n');
-    const headers = lines[0].split(',');
+    const lines = text.split('\n').filter(line => line.trim() !== ""); // Remove empty lines
+    const headers = lines[0].split(',').map(header => header.trim()); // Trim headers
+
     return lines.slice(1).map((line) => {
       const values = line.split(',');
       return headers.reduce((obj, header, index) => {
-        obj[header.trim()] = values[index].trim();
+        // Use trimmed value or empty string if undefined
+        obj[header] = values[index] ? values[index].trim() : "";
         return obj;
       }, {});
     });

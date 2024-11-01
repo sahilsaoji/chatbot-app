@@ -17,7 +17,14 @@ const App = () => {
   const chatContainerRef = useRef(null);
 
   const handleCsvFileLoad = (data) => {
-    setCsvData(data);
+    // Check for undefined values and sanitize data
+    const sanitizedData = data.map(row => 
+      Object.fromEntries(
+        Object.entries(row).map(([key, value]) => [key, value ? value.trim() : ""])
+      )
+    );
+
+    setCsvData(sanitizedData);
     setDataPreviewVisibility(true);
   };
 

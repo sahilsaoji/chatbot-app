@@ -1,244 +1,198 @@
-import { useState, useEffect, useRef } from 'react';
-import * as d3 from 'd3-dsv';
+import React, { useEffect, useRef, useState } from "react";
+import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { VegaLite } from 'react-vega';
+import CsvFileInput from "./components/CsvFileInput";
 
-const url = process.env.NODE_ENV === 'production' 
-  ? 'https://hai-course.onrender.com' 
-  : 'http://127.0.0.1:8000/';
+const API_URL = process.env.NODE_ENV === 'development' 
+  ? 'http://127.0.0.1:8000/' 
+  : 'https://human-ai.onrender.com/';
 
-function App() {
-  const [message, setMessage] = useState("");
-  const [chatHistory, setChatHistory] = useState([]);
-  const [file, setFile] = useState(null);
-  const [data, setData] = useState(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [isThinking, setIsThinking] = useState(false); // For showing the thinking message
-  const [showPreview, setShowPreview] = useState(true);
-  const chatEndRef = useRef(null);
+const App = () => {
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState("");
+  const [csvData, setCsvData] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isDataPreviewVisible, setDataPreviewVisibility] = useState(false);
+  const chatContainerRef = useRef(null);
 
-  const sendMessage = async () => {
-    if (!message.trim()) return;
+  const handleCsvFileLoad = (data) => {
+    setCsvData(data);
+    setDataPreviewVisibility(true);
+  };
 
-    const newChatHistory = [...chatHistory, { sender: 'user', message }];
-    setChatHistory(newChatHistory);
-    setMessage(""); // Clear the message input after sending
+  const handleInputChange = (e) => setInputText(e.target.value);
 
-    if (!data) {
-      setChatHistory([...newChatHistory, { sender: 'bot', message: "Please upload a dataset first." }]);
-      return;
-    }
+  const sendUserMessage = async () => {
+    if (!inputText.trim()) return;
 
-    setIsThinking(true); // Start thinking indicator
+    const newMessage = { sender: "user", text: inputText };
+    setMessages(prev => [...prev, newMessage]);
+    setInputText("");
+    setIsLoading(true);
+    fetchBotResponse(inputText);
+  };
+
+  const fetchBotResponse = async (message) => {
+    const prompt = JSON.stringify(message);
+    if (!prompt) return;
 
     try {
-      const apiUrl = new URL('/query/', url).toString();  // Correctly handle the URL construction
-      console.log("API URL:", apiUrl);
-      const res = await fetch(apiUrl, {
-        method: 'POST',
-        body: JSON.stringify({ prompt: message, data }),
-        headers: {
-          'Content-Type': 'application/json',
-        }
+      const response = await fetch(`${API_URL}query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, csv_data: JSON.stringify(csvData.slice(0, 10)) })
       });
 
-      if (!res.ok) {
-        console.error("API responded with error status:", res.status);
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
-
-      const result = await res.json();
-      console.log("API Response:", result);
-
-      const { chartSpec, description } = result; // Get the description
-
-      setIsThinking(false); // Stop thinking indicator
-      setChatHistory([...newChatHistory, { sender: 'bot', message: description, chartSpec }]);
+      const data = await response.json();
+      processBotResponse(data);
     } catch (error) {
-      console.error("Error fetching the response:", error);
-      setIsThinking(false); // Stop thinking indicator
-      setChatHistory([...newChatHistory, { sender: 'bot', message: "An error occurred. Please try again." }]);
+      console.error("Error fetching bot response:", error);
+      setIsLoading(false);
     }
   };
 
-  const handleFileUpload = (file) => {
-    if (file && file.type === 'text/csv') {
-      setFile(file);
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const csvData = d3.csvParse(event.target.result, d3.autoType);
-        setData(csvData);
-        setChatHistory([...chatHistory, { sender: 'bot', message: 'Dataset uploaded successfully.' }]);
-      };
-      reader.readAsText(file);
-    } else {
-      setChatHistory([...chatHistory, { sender: 'bot', message: 'Please upload a valid CSV file.' }]);
-    }
-  };
+  const processBotResponse = (data) => {
+    const { response, vega_lite_json } = data;
+    const botMessage = { sender: "bot", text: response };
 
-  const handleFileChange = (e) => {
-    const uploadedFile = e.target.files[0];
-    handleFileUpload(uploadedFile);
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const uploadedFile = e.dataTransfer.files[0];
-    handleFileUpload(uploadedFile);
-  };
-
-  const handleMessage = (e) => {
-    setMessage(e.target.value);
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter') {
-      sendMessage();
-    }
-  };
-
-  const togglePreview = () => {
-    setShowPreview(!showPreview);
-  };
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory]);
-
-  // Error boundary for VegaLite
-  const VegaLiteWithErrorHandling = ({ spec }) => {
     try {
-      return <VegaLite spec={spec} width={500} height={300} />; // Make the chart bigger
-    } catch (error) {
-      console.error("Error rendering VegaLite chart:", error);
-      return <p className="text-red-500">Unable to render chart. The chart specification is invalid.</p>;
+      const vegaSpec = JSON.parse(vega_lite_json);
+      const keys = Object.keys(vegaSpec.data.values[0]);
+      const filteredData = extractRelevantData(csvData, keys);
+      vegaSpec.data.values = filteredData;
+      botMessage.spec = vegaSpec;
+    } catch {
+      botMessage.spec = null;
     }
+
+    setMessages(prev => [...prev, botMessage]);
+    setIsLoading(false);
+  };
+
+  const extractRelevantData = (data, keys) => {
+    return data.map(item => {
+      return keys.reduce((acc, key) => {
+        if (item[key] !== undefined) acc[key] = item[key];
+        return acc;
+      }, {});
+    });
+  };
+
+  const toggleDataPreview = () => {
+    setDataPreviewVisibility(prev => !prev);
+  };
+
+  const clearChatHistory = () => setMessages([]);
+
+  const scrollToBottom = () => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  };
+
+  useEffect(scrollToBottom, [messages]);
+
+  const renderDataPreview = () => {
+    if (!csvData.length) return null;
+
+    const headers = Object.keys(csvData[0]); // Display all columns
+    const rowsToPreview = csvData.slice(0, 10);
+
+    return (
+      <div className="overflow-x-auto w-full">
+        <div className="max-h-48 overflow-y-auto">
+          <table className="table-auto border border-gray-300 my-4">
+            <thead>
+              <tr>
+                {headers.map((header, index) => (
+                  <th
+                    key={index}
+                    className="border border-gray-400 p-2 bg-gray-100 whitespace-nowrap"
+                  >
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rowsToPreview.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {headers.map((header, headerIndex) => (
+                    <td
+                      key={headerIndex}
+                      className="border border-gray-400 p-2 whitespace-nowrap"
+                    >
+                      {row[header] || ""}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-green-400 to-blue-500 flex items-center justify-center p-4">
-      <div className="bg-white w-full max-w-4xl rounded-lg shadow-lg p-6 space-y-6">
-        <h1 className="text-3xl text-center font-bold text-gray-900">Data Visualization</h1>
-        <p className="text-center text-gray-500">Upload a dataset and prompt a data visualization based on that dataset</p>
-
-        {/* File upload box */}
-        <div 
-          className={`border-4 ${isDragging ? 'border-blue-600' : 'border-gray-300'} border-dashed rounded-lg p-6 text-center cursor-pointer`}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => document.getElementById('fileInput').click()}
-        >
-          <p className="text-gray-500">Drag & Drop a CSV file here, or click to upload</p>
-          <input
-            type="file"
-            id="fileInput"
-            accept=".csv"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-        </div>
-
-        {/* Dataset preview */}
-        {data && (
-          <div className="mt-4">
-            <button 
-              onClick={togglePreview}
-              className="bg-gray-300 text-gray-800 px-4 py-2 rounded-md mb-2"
-            >
-              {showPreview ? "Hide Preview" : "Show Preview"}
-            </button>
-            {showPreview && (
-              <div className="overflow-auto border border-gray-300 rounded-lg p-4 bg-gray-50 shadow-inner max-h-40">
-                <table className="table-auto w-full text-left text-sm">
-                  <thead>
-                    <tr>
-                      {Object.keys(data[0]).map((col) => (
-                        <th key={col} className="px-4 py-2 border-b border-gray-200">{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.slice(0, 10).map((row, rowIndex) => (
-                      <tr key={rowIndex}>
-                        {Object.values(row).map((value, colIndex) => (
-                          <td key={colIndex} className="px-4 py-2 border-b border-gray-200">{value}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+    <div className="flex flex-col items-center h-screen p-6">
+      <div className="flex-grow flex flex-col w-full max-w-4xl bg-white rounded-lg shadow-md p-6">
+        <h1 className="text-4xl font-bold text-center mb-4 text-gray-800">Data Visualization Assistant</h1>
+        <p className="text-center text-gray-600 mb-4">A powerful tool for visualizing your data effortlessly.</p>
+        <div className="flex-grow flex flex-col bg-gray-50 rounded-lg p-4 mt-3">
+          <CsvFileInput onFileLoad={handleCsvFileLoad} />
+          <div className="flex justify-between mt-3">
+            {isDataPreviewVisible && (
+              <button 
+                onClick={toggleDataPreview} 
+                className="bg-blue-600 text-white rounded-lg px-2 py-1 hover:bg-blue-700 transition duration-300">
+                Hide Data Preview
+              </button>
+            )}
+            {!isDataPreviewVisible && (
+              <button 
+                onClick={toggleDataPreview} 
+                className="bg-blue-600 text-white rounded-lg px-2 py-1 hover:bg-blue-700 transition duration-300">
+                Show Data Preview
+              </button>
+            )}
+          </div>
+          {isDataPreviewVisible && renderDataPreview()}
+          <div
+            ref={chatContainerRef}
+            className="h-[36rem] overflow-y-auto bg-white rounded-lg p-4 mt-3 mb-4 shadow-md" // Updated class
+          >
+            {messages.map((msg, index) => (
+              <div key={index} className={`flex items-start my-2 ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
+                <div className={`${msg.sender === "user" ? "bg-blue-500 text-white" : "bg-gray-200 text-black"} rounded-lg p-3`}>
+                  <Markdown remarkPlugins={[remarkGfm]}>{msg.text}</Markdown>
+                  {msg.spec && <div className="w-full my-4"><VegaLite spec={msg.spec} /></div>}
+                </div>
+              </div>
+            ))}
+            {isLoading && (
+              <div className="flex justify-center items-center my-4">
+                <p className="text-gray-500">Thinking...</p>
               </div>
             )}
           </div>
-        )}
-
-        {/* Chat area */}
-        <div className="overflow-y-auto h-80 mb-5 p-4 border border-gray-200 rounded-lg bg-gray-50 shadow-inner">
-          {chatHistory.length === 0 ? (
-            <p className="text-gray-500 text-center">No messages yet. Start the conversation!</p>
-          ) : (
-            chatHistory.map((chat, index) => (
-              <div key={index} className={`mb-4`}>
-                <div className={`flex ${chat.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  {chat.sender === 'bot'}
-                  {chat.sender === 'user'}
-                  <div className={`flex flex-col ${chat.sender === 'user' ? 'items-end' : 'items-start'}`}>
-                    {/* Render chart above the message if present */}
-                    {chat.chartSpec && Object.keys(chat.chartSpec).length > 0 && (
-                      <div className="mb-2">
-                        <VegaLiteWithErrorHandling spec={chat.chartSpec} />
-                      </div>
-                    )}
-                    <div className={`flex items-center ${chat.sender === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-black'} rounded-lg p-3 max-w-md shadow w-auto`}>
-                      <div className="text-base break-words">
-                        {chat.message}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-
-          {/* Show "thinking..." message while waiting for API */}
-          {isThinking && (
-            <div className="text-gray-500 text-center mb-4">Thinking...</div>
-          )}
-
-          <div ref={chatEndRef} />
         </div>
-
-        {/* Message input */}
-        <div className="flex">
-          <input 
-            type="text" 
-            placeholder="Type your message..." 
-            value={message} 
-            onChange={handleMessage} 
-            onKeyPress={handleKeyPress} 
-            className="flex-grow p-4 border border-gray-300 rounded-l-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-200"
+        <div className="flex mt-3">
+          <input
+            type="text"
+            placeholder="Enter your message"
+            className="flex-grow border border-gray-300 rounded-lg p-4 bg-white shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={inputText}
+            onChange={handleInputChange}
+            onKeyPress={(e) => e.key === "Enter" && sendUserMessage()}
           />
-          <button 
-            className="bg-indigo-600 text-white px-6 py-4 rounded-r-lg hover:bg-indigo-700 transition duration-200" 
-            onClick={sendMessage}
-          >
-            Send
-          </button>
+          <button onClick={sendUserMessage} className="bg-blue-500 text-white rounded-lg ml-2 px-6 py-2 hover:bg-blue-600 transition duration-300">Send</button>
+          <button onClick={clearChatHistory} className="bg-red-500 text-white rounded-lg ml-2 px-6 py-2 hover:bg-red-600 transition duration-300">Clear</button>
         </div>
       </div>
     </div>
   );
-  }
-  
-  export default App;
-  
+};
+
+export default App;

@@ -1,145 +1,297 @@
+import os
+import sys
+import re
+import json
+from io import StringIO
+
+import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import openai
 from openai import OpenAI
 from dotenv import load_dotenv
-import os
-import json
-import uvicorn
-import logging
+from typing import Optional
 
-# Load environment variables (like API keys) from the .env file
+# Load environment variables
 load_dotenv()
 
-app = FastAPI(debug=True)
+# Initialize FastAPI application
+application = FastAPI()
 
-client = OpenAI()
-
-# Set up logging to track app behavior and errors
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Get the OpenAI API key from the environment variables
-api_key = os.environ.get("OPENAI_API_KEY")
-
-# If the API key is not found, raise an error
-if not api_key:
-    raise HTTPException(status_code=500, detail="OpenAI API key is missing")
-
-# Set the OpenAI API key for requests
-openai.api_key = api_key
-
-# Enable CORS (Cross-Origin Resource Sharing) to allow frontend requests
-app.add_middleware(
+# Configure CORS middleware
+application.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow requests from all origins
-    # Allow credentials (cookies, authorization headers)
+    allow_origins=["*"],  # Modify to limit allowed origins
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
-    allow_headers=["*"]  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Define models for handling request and response data
+# Expose 'application' as 'app' for ASGI server compatibility
+app = application
 
+# Set up OpenAI client with API key from environment
+openai_client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY"),
+)
 
+# Define models for requests and responses
 class QueryRequest(BaseModel):
-    prompt: str  # User's question for data visualization
-    data: list  # Parsed CSV data sent from the frontend
-
+    prompt: str
+    csv_data: str
 
 class QueryResponse(BaseModel):
-    description: str  # Description of the chart
-    chartSpec: dict  # Vega-Lite chart specification
+    response: str
+    vega_lite_json: Optional[str]
 
-# Define the main POST endpoint to process user queries
+class CodeResponse(BaseModel):
+    code: str
 
+def clean_input(text: str) -> str:
+    """Sanitize input for the Python REPL by removing unnecessary characters."""
+    text = re.sub(r"^(\s|`)*(?i:python)?\s*", "", text)
+    text = re.sub(r"(\s|`)*$", "", text)
+    return text
 
-@app.post("/query/", response_model=QueryResponse)
-async def query_openai(request: QueryRequest):
-    logger.info(f"Received a new request with prompt: {request.prompt}")
-
-    # Check if data has been uploaded
-    if not request.data:
-        return QueryResponse(response="No dataset uploaded. Please upload a dataset to generate charts.", chartSpec={})
-
+def execute_pandas_code(code_snippet):
+    """Execute the provided Python code and return any output."""
+    original_stdout = sys.stdout
+    sys.stdout = captured_output = StringIO()
     try:
-        # Extract column names and types from the dataset
-        # Get column names from the first row
-        columns = list(request.data[0].keys())
-        column_types = {col: "categorical" if isinstance(
-            request.data[0][col], str) else "quantitative" for col in columns}
-        # Limit dataset to first 50 rows for processing
-        full_data = request.data[:50]
-
-        # Construct the prompt for OpenAI to generate a chart specification
-        prompt = f"""
-        You are a data visualization assistant. A user has provided a dataset with the following columns:
-        {json.dumps(column_types, indent=2)}. 
-        Here is the full dataset: {json.dumps(full_data, indent=2)}.
-        The user has asked the following question: {request.prompt}.
-        
-        You must generate a valid Vega-Lite JSON chart specification and a short description of the chart based on the user's question. Ensure your description is placed in a 'description' key in the JSON object.
-        """
-
-        # Log the constructed prompt for debugging purposes
-        logger.info(f"Constructed prompt: {prompt}")
-
-        # Send the prompt to OpenAI and get a response
-        gpt_response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "assistant", "content": "You are a data visualization assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.25,  # Control creativity of the response
-            n=1,
-            response_format={"type": "json_object"}  # Expect JSON response
-        )
-
-        # Extract the generated message from the response
-        gpt_message = gpt_response.choices[0].message.content
-
-        # Parse the GPT-4 response into JSON
-        chart_response_json = json.loads(gpt_message)
-
-        # Extract the chart description and Vega-Lite specification
-        description = chart_response_json.get("description", "")
-        chart_spec = {key: chart_response_json[key]
-                      for key in chart_response_json if key != "description"}
-
-        # Return the response containing the description and chart specification
-        return QueryResponse(
-            description=description,
-            chartSpec=chart_spec
-        )
-
-    # Handle OpenAI API rate limit errors
-    except openai.RateLimitError as e:
-        logger.error(f"RateLimitError: {str(e)}")
-        raise HTTPException(
-            status_code=499, detail=f"OpenAI API error: {str(e)}")
-
-    # Handle errors during JSON parsing
-    except json.JSONDecodeError as e:
-        logger.error(f"JSONDecodeError: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"JSON decode error: {str(e)}")
-
-    # Catch any unexpected errors and log them
+        cleaned_code = clean_input(code_snippet)
+        exec(cleaned_code)
+        sys.stdout = original_stdout
+        return captured_output.getvalue()
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Unexpected error: {str(e)}")
+        sys.stdout = original_stdout
+        return repr(e)
 
-# Define a simple root endpoint to check if the API is running
+# Functions to print colored messages
+def print_in_red(*args):
+    print("\033[91m" + " ".join(args) + "\033[0m")
 
+def print_in_blue(*args):
+    print("\033[94m" + " ".join(args) + "\033[0m")
 
-@app.get("/")
-async def read_root():
-    return {"message": "API is running"}
+# Define tool configurations for executing code and generating outputs
+execute_pandas_code_tool = {
+    "type": "function",
+    "function": {
+        "name": "execute_pandas_code",
+        "description": "Executes the provided Python code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code_snippet": {
+                    "type": "string",
+                    "description": "The Python code to execute."
+                }
+            },
+            "required": ["code_snippet"],
+            "additionalProperties": False
+        }
+    }
+}
 
-# Handle port configuration for deployment on Render
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
+generate_code_tool = {
+    "type": "function",
+    "function": {
+        "name": "generate_code",
+        "description": "Generate Python code to accomplish the specified task using provided data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code_task": {
+                    "type": "string",
+                    "description": "The task to generate Python code for."
+                },
+                "input_data": {
+                    "type": "string",
+                    "description": "The data to be used in the Python code."
+                }
+            },
+            "required": ["code_task", "input_data"],
+            "additionalProperties": False
+        }
+    }
+}
+
+generate_vega_lite_json_tool = {
+    "type": "function",
+    "function": {
+        "name": "generate_vega_lite_json",
+        "description": "Produce a Vega-Lite JSON specification for the provided data.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chart_data": {
+                    "type": "string",
+                    "description": "The data for generating the Vega-Lite JSON specification."
+                },
+                "chart_prompt": {
+                    "type": "string",
+                    "description": "The prompt to generate the Vega-Lite JSON specification from."
+                }
+            },
+            "required": ["chart_data", "chart_prompt"],
+            "additionalProperties": False
+        }
+    }
+}
+
+def generate_code(code_task, input_data):
+    """Produce Python code to execute the specified task using the given data."""
+    code_prompt = f"Generate Python code to perform the following task: {code_task} using the data {input_data}. Print the result using print(result). The code should be solely for calculations, not for graphing or visualization."
+
+    assistant_instructions = """You are a helpful AI assistant.
+Use your coding and language skills to solve tasks.
+Suggest Python code for execution when necessary.
+If you need to gather information, use code to output what you need, such as browsing, reading files, or checking the current date/time.
+Use code to perform tasks and output results. Plan your approach clearly, indicating which steps use code and which use your language skills.
+When using code, specify the script type. Users cannot modify your code, so avoid incomplete suggestions.
+Only include one code block per response, and do not ask users to copy and paste results. Use the 'print' function for outputs when applicable.
+If errors arise, correct them and provide the full code again. Analyze and revisit your assumptions if the task remains unresolved.
+Verify your answers and include verifiable evidence where possible. Do not create visualizations or import visualization libraries.
+"""
+
+    response = openai_client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": assistant_instructions},
+            {"role": "user", "content": code_prompt}
+        ],
+        response_format=CodeResponse
+    )
+
+    return CodeResponse(code=response.choices[0].message.parsed.code)
+
+def generate_vega_lite_json(chart_data, chart_prompt):
+    """Create a Vega-Lite JSON specification based on the provided data and prompt."""
+    vega_lite_prompt = f"Generate a Vega-Lite JSON specification for the following data: {chart_data} based on the prompt: {chart_prompt}."
+
+    assistant_instructions = """You are an AI assistant tasked with generating Vega-Lite specifications. Please adhere to the following structure: {
+    "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+    width: 400,
+    height: 200,
+    "mark": "bar",
+    "data": {
+        "values": [
+            {"category": "A", "group": "x", "value": 0.1},
+            {"category": "A", "group": "y", "value": 0.6},
+            {"category": "A", "group": "z", "value": 0.9},
+            {"category": "B", "group": "x", "value": 0.7},
+            {"category": "B", "group": "y", "value": 0.2},
+            {"category": "B", "group": "z", "value": 1.1},
+            {"category": "C", "group": "x", "value": 0.6},
+            {"category": "C", "group": "y", "value": 0.1},
+            {"category": "C", "group": "z", "value": 0.2}
+        ]
+    },
+    "encoding": {
+        "x": {"field": "category"},
+        "y": {"field": "value", "type": "quantitative"},
+        "xOffset": {"field": "group"},
+        "color": {"field": "group"}
+    }
+}
+
+Ensure to include the schema, data, and mark field, while the encoding should accurately reflect the appropriate fields and types. Store the Vega-Lite specification in the variable vega_lite_json. Do not include the specification in the response variable. Use the response variable for relevant information only. If visualization generation fails, return an empty Vega-Lite JSON specification.
+"""
+
+    response = openai_client.beta.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": assistant_instructions},
+            {"role": "user", "content": vega_lite_prompt}
+        ],
+        response_format=QueryResponse
+    )
+
+    if "mark" not in response.choices[0].message.parsed.vega_lite_json:
+        return QueryResponse(response="An issue occurred while generating the visualization. Please try again.", vega_lite_json="")
+
+    return QueryResponse(
+        response=response.choices[0].message.parsed.response,
+        vega_lite_json=response.choices[0].message.parsed.vega_lite_json
+    )
+
+# Define tools for the application
+available_tools = [execute_pandas_code_tool, generate_code_tool, generate_vega_lite_json_tool]
+function_map = {
+    "execute_pandas_code": execute_pandas_code,
+    "generate_code": generate_code,
+    "generate_vega_lite_json": generate_vega_lite_json
+}
+
+def process_query(user_query, assistant_instructions, available_tools, function_map, max_iterations=10):
+    """Process a query, utilizing available tools and tracking iterations."""
+    messages = [{"role": "system", "content": assistant_instructions}]
+    messages.append({"role": "user", "content": user_query})
+    vega_lite_json = ""
+    iteration = 0
+
+    while iteration < max_iterations:
+        iteration += 1
+        print("Iteration:", iteration)
+
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini", temperature=0.0, messages=messages, tools=available_tools
+        )
+
+        if response.choices[0].message.content:
+            print_in_red(response.choices[0].message.content)
+
+        if response.choices[0].message.tool_calls is None:
+            break  # Exit if no function calls
+
+        messages.append(response.choices[0].message)  # Track conversation
+
+        for tool_call in response.choices[0].message.tool_calls:
+            print_in_blue("Calling:", tool_call.function.name, "with", tool_call.function.arguments)
+            arguments = json.loads(tool_call.function.arguments)
+            function_to_call = function_map[tool_call.function.name]
+            output = function_to_call(**arguments)
+
+            if tool_call.function.name == "generate_vega_lite_json":
+                vega_lite_json = output.vega_lite_json
+
+            # Create message containing the result of the function call
+            result_content = json.dumps({**arguments, "result": str(output)})
+            function_call_result_message = {
+                "role": "tool",
+                "content": result_content,
+                "tool_call_id": tool_call.id,
+            }
+            print_in_blue("Action result:", result_content)
+
+            messages.append(function_call_result_message)
+
+        if iteration == max_iterations and response.choices[0].message.tool_calls:
+            print_in_red("Maximum iterations reached")
+            return QueryResponse(response="The tool agent could not complete the task in the given time. Please try again.", vega_lite_json="")
+
+    return QueryResponse(response=response.choices[0].message.content, vega_lite_json=vega_lite_json)
+
+@application.post("/query", response_model=QueryResponse)
+async def query_openai(user_request: QueryRequest):
+    """Handle POST requests for querying OpenAI with provided data."""
+    try:
+        if json.loads(user_request.csv_data) == []:
+            return QueryResponse(response="Please provide valid CSV data.", vega_lite_json="")
+
+        full_prompt = user_request.prompt + user_request.csv_data
+        assistant_instructions = """
+            You are a helpful assistant. Use the supplied tools to assist the user when necessary.
+            Assess if the user's question pertains to the provided data. If not, ask
+            for a relevant prompt. Use the response variable for explanations, and store
+            the Vega-Lite specification in the vega_lite_json variable.
+            After generating code, execute it with the available tools. Do not inform the user about
+            any generated code or execution results.
+            All visualizations should be handled with the provided tool, not through code.
+            Do not display any generated Vega-Lite specifications to the user.
+            While users may pose questions unrelated to the data, maintain focus on the data
+            and return an empty Vega-Lite JSON specification along with an explanation.
+        """
+        return process_query(full_prompt, assistant_instructions, available_tools, function_map)
+    except Exception as e:
+        return QueryResponse(response="An error occurred. Please try again.", vega_lite_json="")
